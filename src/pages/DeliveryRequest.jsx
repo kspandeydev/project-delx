@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
-import { deliveryService } from '../services/api.js';
+import { deliveryService, paymentService } from '../services/api.js';
+import { auth } from '../config/firebase.js';
 
 export default function DeliveryRequest({ onNavigate, onBack }) {
   const [step, setStep] = useState('pickup'); // pickup, dropoff, details, confirm
@@ -15,42 +16,67 @@ export default function DeliveryRequest({ onNavigate, onBack }) {
   const mapInstance = useRef(null);
 
   const categories = [
-    { id: 'docs', label: 'Documents', emoji: '📄' },
-    { id: 'electronics', label: 'Electronics', emoji: '💻' },
+    { id: 'docs', label: 'Docs', emoji: '📄' },
+    { id: 'electronics', label: 'Tech', emoji: '💻' },
     { id: 'food', label: 'Food', emoji: '🍱' },
-    { id: 'clothes', label: 'Clothes', emoji: '👕' },
+    { id: 'clothes', label: 'Fits', emoji: '👕' },
     { id: 'books', label: 'Books', emoji: '📚' },
     { id: 'gift', label: 'Gift', emoji: '🎁' },
-    { id: 'medicine', label: 'Medicine', emoji: '💊' },
-    { id: 'other', label: 'Other', emoji: '📦' },
+    { id: 'medicine', label: 'Meds', emoji: '💊' },
+    { id: 'other', label: 'Misc', emoji: '📦' },
   ];
 
   const quickLocations = [
     { name: 'Koramangala', lat: 12.9279, lng: 77.6271, address: 'Koramangala, Bangalore' },
-    { name: 'Whitefield', lat: 12.9698, lng: 77.7500, address: 'Whitefield, Bangalore' },
-    { name: 'HSR Layout', lat: 12.9116, lng: 77.6389, address: 'HSR Layout, Bangalore' },
     { name: 'Indiranagar', lat: 12.9784, lng: 77.6408, address: 'Indiranagar, Bangalore' },
-    { name: 'Electronic City', lat: 12.8399, lng: 77.6770, address: 'Electronic City, Bangalore' },
-    { name: 'BTM Layout', lat: 12.9166, lng: 77.6101, address: 'BTM Layout, Bangalore' },
+    { name: 'HSR Layout', lat: 12.9116, lng: 77.6389, address: 'HSR Layout, Bangalore' },
   ];
 
   useEffect(() => {
+    if (window.google) {
+      const attachAC = (id, type) => {
+        const el = document.getElementById(id);
+        if (el && !el.hasAttribute('data-ac')) {
+          const ac = new window.google.maps.places.Autocomplete(el);
+          ac.addListener('place_changed', () => {
+             const place = ac.getPlace();
+             if (place.geometry) {
+               selectLocation({ lat: place.geometry.location.lat(), lng: place.geometry.location.lng(), address: place.formatted_address }, type);
+             }
+          });
+          el.setAttribute('data-ac', 'true');
+        }
+      };
+      attachAC('del-pickup-input', 'pickup');
+      attachAC('del-dropoff-input', 'dropoff');
+    }
+
     if (mapRef.current && window.google && !mapInstance.current) {
       mapInstance.current = new window.google.maps.Map(mapRef.current, {
         center: { lat: 12.9716, lng: 77.5946 },
-        zoom: 12,
+        zoom: 13,
         styles: [
-          { elementType: 'geometry', stylers: [{ color: '#1a1a2e' }] },
-          { elementType: 'labels.text.stroke', stylers: [{ color: '#0a0a0f' }] },
-          { elementType: 'labels.text.fill', stylers: [{ color: '#64748b' }] },
-          { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#2a2a4a' }] },
-          { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#0f172a' }] },
+          { elementType: 'geometry', stylers: [{ color: '#000000' }] },
+          { elementType: 'labels.text.fill', stylers: [{ color: '#4b5563' }] },
+          { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#111827' }] },
+          { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#000000' }] },
+          { featureType: 'poi', stylers: [{ visibility: 'off' }] },
         ],
         disableDefaultUI: true,
-        zoomControl: true,
+      });
+
+      mapInstance.current.addListener('click', (e) => {
+        const lat = e.latLng.lat();
+        const lng = e.latLng.lng();
+        const geocoder = new window.google.maps.Geocoder();
+        const type = step === 'pickup' ? 'pickup' : 'dropoff';
+        geocoder.geocode({ location: { lat, lng } }, (res) => {
+          const addr = (res && res[0]) ? res[0].formatted_address.split(',')[0] : 'Selected Location';
+          selectLocation({ lat, lng, address: addr }, type);
+        });
       });
     }
-  }, []);
+  }, [step]);
 
   const selectLocation = (loc, type) => {
     if (type === 'pickup') {
@@ -62,226 +88,142 @@ export default function DeliveryRequest({ onNavigate, onBack }) {
       setDropoffCoords({ lat: loc.lat, lng: loc.lng });
       setStep('details');
     }
-    if (mapInstance.current && window.google) {
+    if (window.google) {
       new window.google.maps.Marker({
-        position: { lat: loc.lat, lng: loc.lng },
+        position: loc,
         map: mapInstance.current,
         icon: {
-          path: window.google.maps.SymbolPath.CIRCLE, scale: 10,
-          fillColor: type === 'pickup' ? '#10b981' : '#ec4899',
-          fillOpacity: 1, strokeWeight: 3,
-          strokeColor: type === 'pickup' ? '#059669' : '#db2777',
+          path: window.google.maps.SymbolPath.CIRCLE, scale: 8,
+          fillColor: '#d4ff00', fillOpacity: 1, strokeWeight: 2, strokeColor: '#000'
         }
       });
-      mapInstance.current.panTo({ lat: loc.lat, lng: loc.lng });
+      mapInstance.current.panTo(loc);
     }
   };
 
   const handleSubmit = async () => {
-    if (!packageDesc || !weight || !category) return;
     setLoading(true);
     try {
-      await deliveryService.createDelivery({
-        senderId: 'current_user',
-        senderName: 'You',
+      const price = Math.floor(40 + Math.random() * 60);
+      const deliveryData = {
         pickupLocation: { ...pickupCoords, address: pickupAddress },
         dropoffLocation: { ...dropoffCoords, address: dropoffAddress },
-        packageDescription: `${categories.find(c=>c.id===category)?.emoji} ${packageDesc}`,
+        packageDescription: packageDesc,
         weight: parseFloat(weight),
         category,
-        price: Math.floor(20 + parseFloat(weight) * 15 + Math.random() * 30),
-      });
-      setStep('confirm');
-    } catch (err) {
-      console.error(err);
+        price
+      };
+
+      const order = await paymentService.createOrder(price, 'temp_id');
+      paymentService.openPayment(order, 
+        async (res) => {
+          try {
+            const created = await deliveryService.createDelivery(deliveryData);
+            await paymentService.recordTransaction({
+              userId: auth.currentUser?.uid,
+              amount: price,
+              type: 'debit',
+              description: 'Payment for delivery ' + created.id
+            });
+            setStep('confirm');
+          } catch(err) { console.error(err); }
+          setLoading(false);
+        },
+        (err) => {
+          console.error('Payment failed', err);
+          alert('Payment was cancelled or failed.');
+          setLoading(false);
+        }
+      );
+    } catch (e) { 
+      console.error(e); 
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   return (
-    <div className="page">
-      <div className="page-header">
-        <div className="flex items-center gap-md">
-          <button className="btn-icon btn-secondary" onClick={onBack}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
-          </button>
-          <h1 className="page-title font-display">
-            {step === 'confirm' ? 'Request Sent!' : 'Send a Package'}
-          </h1>
-        </div>
+    <div className="page animate-fadeIn" style={{ display: 'flex', flexDirection: 'column' }}>
+      {/* Absolute Map Layer */}
+      <div ref={mapRef} style={{ position: 'absolute', inset: 0, zIndex: 0 }} />
+      <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to bottom, rgba(0,0,0,0.4), rgba(0,0,0,0.8))', pointerEvents: 'none', zIndex: 1 }} />
+
+      {/* Content Overlay */}
+      <div className="page-header" style={{ position: 'relative', zIndex: 10, padding: '40px 24px' }}>
+         <button className="btn btn-ghost" onClick={onBack} style={{ marginBottom: '20px', padding: '0' }}>← BACK</button>
+         <h1 className="text-3xl font-display" style={{ fontWeight: 900, letterSpacing: '-0.02em' }}>
+           {step === 'confirm' ? 'LIT! 🔥' : 'SEND IT.'}
+         </h1>
       </div>
 
-      <div className="page-content">
-        {/* Map */}
-        <div className="map-container animate-fadeIn" ref={mapRef} style={{ marginBottom: '24px' }}>
-          {!window.google && (
-            <div style={{width:'100%',height:'100%',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:'8px'}}>
-              <span style={{fontSize:'2rem'}}>📦</span>
-              <p className="text-sm" style={{color:'var(--text-muted)'}}>Map loading...</p>
-            </div>
-          )}
-        </div>
-
-        {/* Pickup Location */}
+      <div className="page-content" style={{ position: 'relative', zIndex: 10, flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '24px' }}>
+        
         {step === 'pickup' && (
-          <div className="animate-slideUp">
-            <h2 className="text-lg font-display" style={{ fontWeight: 600, marginBottom: '4px' }}>
-              Pickup Location 📍
-            </h2>
-            <p className="text-sm" style={{ color: 'var(--text-muted)', marginBottom: '16px' }}>
-              Where should the commuter pick up your package?
-            </p>
-            <input
-              type="text" className="input-field"
-              placeholder="Search for a location..."
-              value={pickupAddress}
-              onChange={(e) => setPickupAddress(e.target.value)}
-              style={{ marginBottom: '16px' }}
-            />
-            <div style={{display:'flex',flexWrap:'wrap',gap:'8px'}}>
-              {quickLocations.map(loc => (
-                <button key={loc.name} className="location-chip-sm" onClick={() => selectLocation(loc, 'pickup')}>
-                  📍 {loc.name}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Dropoff Location */}
-        {step === 'dropoff' && (
-          <div className="animate-slideUp">
-            <div className="glass-card" style={{padding:'12px 16px',marginBottom:'16px',display:'flex',flexDirection:'column',gap:'4px'}}>
-              <span className="text-xs" style={{color:'var(--accent-green)'}}>PICKUP</span>
-              <span className="text-sm" style={{fontWeight:500}}>{pickupAddress}</span>
-            </div>
-            <h2 className="text-lg font-display" style={{ fontWeight: 600, marginBottom: '4px' }}>
-              Drop-off Location 🏁
-            </h2>
-            <p className="text-sm" style={{ color: 'var(--text-muted)', marginBottom: '16px' }}>
-              Where should the package be delivered?
-            </p>
-            <input
-              type="text" className="input-field"
-              placeholder="Search for a location..."
-              value={dropoffAddress}
-              onChange={(e) => setDropoffAddress(e.target.value)}
-              style={{ marginBottom: '16px' }}
-            />
-            <div style={{display:'flex',flexWrap:'wrap',gap:'8px'}}>
-              {quickLocations.filter(l => l.address !== pickupAddress).map(loc => (
-                <button key={loc.name} className="location-chip-sm" onClick={() => selectLocation(loc, 'dropoff')}>
-                  🏁 {loc.name}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Package Details */}
-        {step === 'details' && (
-          <div className="animate-slideUp">
-            <div className="delivery-card" style={{marginBottom:'24px'}}>
-              <div className="delivery-route">
-                <div className="delivery-route-line">
-                  <div className="route-dot start" />
-                  <div className="route-line" />
-                  <div className="route-dot end" />
-                </div>
-                <div className="delivery-locations">
-                  <div className="delivery-location"><div className="delivery-location-label">Pickup</div><div className="truncate">{pickupAddress}</div></div>
-                  <div className="delivery-location"><div className="delivery-location-label">Drop-off</div><div className="truncate">{dropoffAddress}</div></div>
-                </div>
-              </div>
-            </div>
-
-            <h2 className="text-lg font-display" style={{ fontWeight: 600, marginBottom: '16px' }}>
-              Package Details 📦
-            </h2>
-
-            <div style={{marginBottom:'20px'}}>
-              <label className="input-label" style={{marginBottom:'10px',display:'block'}}>Category</label>
-              <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'8px'}}>
-                {categories.map(cat => (
-                  <button
-                    key={cat.id}
-                    className={`category-chip ${category === cat.id ? 'active' : ''}`}
-                    onClick={() => setCategory(cat.id)}
-                  >
-                    <span style={{fontSize:'1.2rem'}}>{cat.emoji}</span>
-                    <span className="text-xs">{cat.label}</span>
-                  </button>
+          <div className="glass-card animate-slideUp" style={{ padding: '32px' }}>
+             <p className="text-xs" style={{ fontWeight: 800, color: 'var(--accent-primary)', marginBottom: '12px' }}>STEP 01/03</p>
+             <h2 className="text-xl font-display" style={{ fontWeight: 800, marginBottom: '24px' }}>Where's the pickup?</h2>
+             <input id="del-pickup-input" className="input-field" placeholder="Search address or tap map" value={pickupAddress} onChange={e => setPickupAddress(e.target.value)} style={{ marginBottom: '24px' }} />
+             <div className="flex gap-sm">
+                {quickLocations.map(l => (
+                  <button key={l.name} className="chip" onClick={() => selectLocation(l, 'pickup')}>{l.name}</button>
                 ))}
-              </div>
-            </div>
-
-            <div className="input-group" style={{marginBottom:'16px'}}>
-              <label className="input-label">What's in the package?</label>
-              <input
-                type="text" className="input-field"
-                placeholder="e.g., Laptop charger and cables"
-                value={packageDesc}
-                onChange={(e) => setPackageDesc(e.target.value)}
-              />
-            </div>
-
-            <div className="input-group" style={{marginBottom:'32px'}}>
-              <label className="input-label">Weight (kg)</label>
-              <input
-                type="number" className="input-field"
-                placeholder="Approximate weight"
-                value={weight}
-                onChange={(e) => setWeight(e.target.value)}
-                min="0.1" max="10" step="0.1"
-              />
-            </div>
-
-            <button
-              className="btn btn-primary btn-full btn-lg"
-              onClick={handleSubmit}
-              disabled={loading || !packageDesc || !weight || !category}
-            >
-              {loading ? '...' : 'Find Commuters →'}
-            </button>
+             </div>
           </div>
         )}
 
-        {/* Confirmation */}
+        {step === 'dropoff' && (
+          <div className="glass-card animate-slideUp" style={{ padding: '32px' }}>
+             <p className="text-xs" style={{ fontWeight: 800, color: 'var(--accent-primary)', marginBottom: '12px' }}>STEP 02/03</p>
+             <h2 className="text-xl font-display" style={{ fontWeight: 800, marginBottom: '24px' }}>Where's it going?</h2>
+             <input id="del-dropoff-input" className="input-field" placeholder="Drop-off point" value={dropoffAddress} onChange={e => setDropoffAddress(e.target.value)} style={{ marginBottom: '24px' }} />
+             <div className="flex gap-sm">
+                {quickLocations.map(l => (
+                  <button key={l.name} className="chip" onClick={() => selectLocation(l, 'dropoff')}>{l.name}</button>
+                ))}
+             </div>
+          </div>
+        )}
+
+        {step === 'details' && (
+          <div className="glass-card animate-slideUp" style={{ padding: '32px' }}>
+             <p className="text-xs" style={{ fontWeight: 800, color: 'var(--accent-primary)', marginBottom: '12px' }}>FINAL STEP</p>
+             <h2 className="text-xl font-display" style={{ fontWeight: 800, marginBottom: '24px' }}>Package Details</h2>
+             
+             <div className="flex flex-col gap-md">
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px' }}>
+                   {categories.map(c => (
+                     <button key={c.id} className={`glass-card ${category === c.id ? 'active' : ''}`} 
+                             onClick={() => setCategory(c.id)} style={{ padding: '12px 4px', textAlign: 'center', border: category === c.id ? '1px solid var(--accent-primary)' : '1px solid transparent' }}>
+                        <div style={{ fontSize: '1.2rem' }}>{c.emoji}</div>
+                        <div style={{ fontSize: '0.6rem', fontWeight: 800, marginTop: '4px' }}>{c.label}</div>
+                     </button>
+                   ))}
+                </div>
+                <input className="input-field" placeholder="What's inside?" value={packageDesc} onChange={e => setPackageDesc(e.target.value)} />
+                <input className="input-field" type="number" placeholder="Weight (kg)" value={weight} onChange={e => setWeight(e.target.value)} />
+                <button className="btn btn-primary btn-full btn-lg" onClick={handleSubmit} disabled={loading || !packageDesc || !weight || !category}>
+                   {loading ? 'SENDING...' : 'CONFIRM REQUEST'}
+                </button>
+             </div>
+          </div>
+        )}
+
         {step === 'confirm' && (
-          <div className="animate-scaleIn text-center" style={{padding:'32px 0'}}>
-            <div style={{fontSize:'4rem',marginBottom:'16px'}}>🎉</div>
-            <h2 className="text-2xl font-display" style={{fontWeight:700,marginBottom:'8px'}}>Request Sent!</h2>
-            <p className="text-sm" style={{color:'var(--text-muted)',marginBottom:'24px'}}>
-              We're matching you with commuters going your way. You'll be notified when someone accepts!
-            </p>
-            <button className="btn btn-primary btn-full btn-lg" onClick={() => onNavigate('matching')}>
-              View Matches
-            </button>
-            <button className="btn btn-ghost btn-full" onClick={() => onNavigate('dashboard')} style={{marginTop:'12px'}}>
-              Back to Dashboard
-            </button>
+          <div className="glass-card animate-scaleIn" style={{ padding: '48px 32px', textAlign: 'center' }}>
+             <div style={{ fontSize: '4rem', marginBottom: '24px' }}>🚀</div>
+             <h2 className="text-2xl font-display" style={{ fontWeight: 900, marginBottom: '12px' }}>REQUEST LIVE</h2>
+             <p className="text-sm" style={{ color: 'var(--text-muted)', marginBottom: '32px' }}>Commuters are being notified. Sit tight!</p>
+             <div className="flex flex-col gap-sm">
+                <button className="btn btn-primary btn-full" onClick={() => onNavigate('matching')}>VIEW MATCHES</button>
+                <button className="btn btn-ghost btn-full" onClick={() => onNavigate('dashboard')}>DASHBOARD</button>
+             </div>
           </div>
         )}
+
       </div>
 
       <style>{`
-        .location-chip-sm {
-          padding: 8px 14px; border-radius: var(--radius-full); font-size: 0.8rem;
-          background: var(--bg-glass); border: 1px solid var(--border-subtle);
-          color: var(--text-secondary); transition: all var(--transition-smooth); cursor: pointer;
-        }
-        .location-chip-sm:hover { background: var(--bg-glass-hover); border-color: var(--border-accent); color: var(--text-primary); }
-        .category-chip {
-          display: flex; flex-direction: column; align-items: center; gap: 6px;
-          padding: 14px 8px; border-radius: var(--radius-md);
-          background: var(--bg-glass); border: 1px solid var(--border-subtle);
-          transition: all var(--transition-smooth); cursor: pointer; color: var(--text-secondary);
-        }
-        .category-chip.active {
-          border-color: var(--accent-purple); background: rgba(168,85,247,0.08);
-          color: var(--text-primary); box-shadow: var(--shadow-glow-purple);
-        }
-        .category-chip:hover { border-color: var(--border-light); }
+        .chip { border: 1px solid var(--border-subtle); background: var(--bg-glass); color: var(--text-secondary); font-size: 0.7rem; font-weight: 800; padding: 6px 16px; border-radius: 20px; text-transform: uppercase; }
+        .chip:hover { border-color: var(--accent-primary); color: var(--accent-primary); }
       `}</style>
     </div>
   );

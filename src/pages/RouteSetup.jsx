@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { routeService } from '../services/api.js';
+import { auth } from '../config/firebase.js';
 
 export default function RouteSetup({ onNavigate, onBack }) {
   const [step, setStep] = useState('start'); // start, end, schedule, confirm
@@ -10,47 +11,61 @@ export default function RouteSetup({ onNavigate, onBack }) {
   const [selectedDays, setSelectedDays] = useState(['Mon', 'Tue', 'Wed', 'Thu', 'Fri']);
   const [maxWeight, setMaxWeight] = useState(3);
   const [loading, setLoading] = useState(false);
-  const [mapReady, setMapReady] = useState(false);
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
   const [startCoords, setStartCoords] = useState(null);
   const [endCoords, setEndCoords] = useState(null);
 
-  const blrCenter = { lat: 12.9716, lng: 77.5946 };
-
   const popularLocations = [
     { name: 'Koramangala', lat: 12.9279, lng: 77.6271, address: 'Koramangala, Bangalore' },
-    { name: 'Whitefield', lat: 12.9698, lng: 77.7500, address: 'Whitefield, Bangalore' },
-    { name: 'Electronic City', lat: 12.8399, lng: 77.6770, address: 'Electronic City, Bangalore' },
-    { name: 'Manyata Tech Park', lat: 13.0462, lng: 77.6214, address: 'Manyata Tech Park, Bangalore' },
-    { name: 'HSR Layout', lat: 12.9116, lng: 77.6389, address: 'HSR Layout, Bangalore' },
     { name: 'Indiranagar', lat: 12.9784, lng: 77.6408, address: 'Indiranagar, Bangalore' },
-    { name: 'MG Road', lat: 12.9756, lng: 77.6066, address: 'MG Road, Bangalore' },
-    { name: 'BTM Layout', lat: 12.9166, lng: 77.6101, address: 'BTM Layout, Bangalore' },
+    { name: 'Whitefield', lat: 12.9698, lng: 77.7500, address: 'Whitefield, Bangalore' },
   ];
 
   const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
   useEffect(() => {
+    if (window.google) {
+      const attachAC = (id, type) => {
+        const el = document.getElementById(id);
+        if (el && !el.hasAttribute('data-ac')) {
+          const ac = new window.google.maps.places.Autocomplete(el);
+          ac.addListener('place_changed', () => {
+            const place = ac.getPlace();
+            if (place.geometry) {
+               selectLocation({ lat: place.geometry.location.lat(), lng: place.geometry.location.lng(), address: place.formatted_address }, type);
+            }
+          });
+          el.setAttribute('data-ac', 'true');
+        }
+      };
+      attachAC('route-start-input', 'start');
+      attachAC('route-end-input', 'end');
+    }
+
     if (mapRef.current && window.google && !mapInstance.current) {
       mapInstance.current = new window.google.maps.Map(mapRef.current, {
-        center: blrCenter,
-        zoom: 12,
+        center: { lat: 12.9716, lng: 77.5946 },
+        zoom: 13,
         styles: [
-          { elementType: 'geometry', stylers: [{ color: '#1a1a2e' }] },
-          { elementType: 'labels.text.stroke', stylers: [{ color: '#0a0a0f' }] },
-          { elementType: 'labels.text.fill', stylers: [{ color: '#64748b' }] },
-          { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#2a2a4a' }] },
-          { featureType: 'road', elementType: 'labels.text.fill', stylers: [{ color: '#94a3b8' }] },
-          { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#0f172a' }] },
-          { featureType: 'poi', elementType: 'geometry', stylers: [{ color: '#12121a' }] },
-          { featureType: 'poi', elementType: 'labels.text.fill', stylers: [{ color: '#64748b' }] },
+          { elementType: 'geometry', stylers: [{ color: '#000000' }] },
+          { elementType: 'labels.text.fill', stylers: [{ color: '#4b5563' }] },
+          { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#111827' }] },
+          { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#000000' }] },
         ],
         disableDefaultUI: true,
-        zoomControl: true,
-        mapTypeControl: false,
       });
-      setMapReady(true);
+
+      mapInstance.current.addListener('click', (e) => {
+        const lat = e.latLng.lat();
+        const lng = e.latLng.lng();
+        const geocoder = new window.google.maps.Geocoder();
+        const type = step === 'start' ? 'start' : 'end';
+        geocoder.geocode({ location: { lat, lng } }, (res) => {
+          const addr = (res && res[0]) ? res[0].formatted_address.split(',')[0] : 'Selected';
+          selectLocation({ lat, lng, address: addr }, type);
+        });
+      });
     }
   }, [step]);
 
@@ -64,308 +79,128 @@ export default function RouteSetup({ onNavigate, onBack }) {
       setEndCoords({ lat: loc.lat, lng: loc.lng });
       setStep('schedule');
     }
-
-    if (mapInstance.current && window.google) {
+    if (window.google) {
       new window.google.maps.Marker({
-        position: { lat: loc.lat, lng: loc.lng },
+        position: loc,
         map: mapInstance.current,
         icon: {
-          path: window.google.maps.SymbolPath.CIRCLE,
-          scale: 10,
-          fillColor: type === 'start' ? '#10b981' : '#ec4899',
-          fillOpacity: 1,
-          strokeWeight: 3,
-          strokeColor: type === 'start' ? '#059669' : '#db2777',
+          path: window.google.maps.SymbolPath.CIRCLE, scale: 8,
+          fillColor: '#d4ff00', fillOpacity: 1, strokeWeight: 2, strokeColor: '#000'
         }
       });
-      mapInstance.current.panTo({ lat: loc.lat, lng: loc.lng });
-      mapInstance.current.setZoom(14);
+      mapInstance.current.panTo(loc);
     }
-  };
-
-  const toggleDay = (day) => {
-    setSelectedDays(prev =>
-      prev.includes(day) ? prev.filter(d => d !== day) : [...prev, day]
-    );
   };
 
   const handleSubmit = async () => {
     setLoading(true);
     try {
       await routeService.createRoute({
+        commuterId: auth.currentUser?.uid,
         startLocation: { ...startCoords, address: startAddress },
         endLocation: { ...endCoords, address: endAddress },
-        startTime,
-        endTime,
-        recurringDays: selectedDays,
-        maxPackageWeight: maxWeight,
-        commuterId: 'current_user',
-        commuterName: 'You',
+        startTime, endTime, recurringDays: selectedDays, maxPackageWeight: maxWeight
       });
       setStep('confirm');
-    } catch (err) {
-      console.error(err);
-    }
+    } catch (err) { console.error(err); }
     setLoading(false);
   };
 
   return (
-    <div className="page">
-      <div className="page-header">
-        <div className="flex items-center gap-md">
-          <button className="btn-icon btn-secondary" onClick={onBack}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
-          </button>
-          <h1 className="page-title font-display">
-            {step === 'confirm' ? 'Route Created!' : 'Set Your Route'}
-          </h1>
-        </div>
-        {step !== 'confirm' && (
-          <div className="route-steps">
-            <div className={`route-step ${step === 'start' ? 'active' : (step !== 'start' ? 'done' : '')}`}>1</div>
-            <div className="route-step-line" />
-            <div className={`route-step ${step === 'end' ? 'active' : (['schedule', 'confirm'].includes(step) ? 'done' : '')}`}>2</div>
-            <div className="route-step-line" />
-            <div className={`route-step ${step === 'schedule' ? 'active' : (step === 'confirm' ? 'done' : '')}`}>3</div>
-          </div>
-        )}
+    <div className="page animate-fadeIn" style={{ display: 'flex', flexDirection: 'column' }}>
+      <div ref={mapRef} style={{ position: 'absolute', inset: 0, zIndex: 0 }} />
+      <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to bottom, rgba(0,0,0,0.4), rgba(0,0,0,0.8))', pointerEvents: 'none', zIndex: 1 }} />
+
+      <div className="page-header" style={{ position: 'relative', zIndex: 10, padding: '40px 24px' }}>
+         <button className="btn btn-ghost" onClick={onBack} style={{ marginBottom: '20px', padding: '0' }}>← BACK</button>
+         <h1 className="text-3xl font-display" style={{ fontWeight: 900 }}>PLAN ROUTE.</h1>
       </div>
 
-      <div className="page-content">
-        {/* Map */}
-        <div className="map-container animate-fadeIn" ref={mapRef} style={{ marginBottom: '24px' }}>
-          {!window.google && (
-            <div className="map-placeholder">
-              <span style={{ fontSize: '2rem' }}>🗺️</span>
-              <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Map loading...</p>
-            </div>
-          )}
-        </div>
-
-        {/* Start Location */}
+      <div className="page-content" style={{ position: 'relative', zIndex: 10, flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '24px' }}>
+        
         {step === 'start' && (
-          <div className="animate-slideUp">
-            <h2 className="text-lg font-display" style={{ fontWeight: 600, marginBottom: '4px' }}>
-              Where do you start? 📍
-            </h2>
-            <p className="text-sm" style={{ color: 'var(--text-muted)', marginBottom: '16px' }}>
-              Your commute starting point
-            </p>
-
-            <div className="input-group" style={{ marginBottom: '16px' }}>
-              <input
-                type="text"
-                className="input-field"
-                placeholder="Search or pick from popular spots"
-                value={startAddress}
-                onChange={(e) => setStartAddress(e.target.value)}
-              />
-            </div>
-
-            <div className="section-title" style={{ marginBottom: '12px' }}>Popular in Bangalore</div>
-            <div className="location-grid">
-              {popularLocations.map(loc => (
-                <button key={loc.name} className="location-chip" onClick={() => selectLocation(loc, 'start')}>
-                  <span>📍</span>
-                  {loc.name}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* End Location */}
-        {step === 'end' && (
-          <div className="animate-slideUp">
-            <div className="selected-location glass-card" style={{ padding: '12px 16px', marginBottom: '16px' }}>
-              <span className="text-xs" style={{ color: 'var(--accent-green)' }}>FROM</span>
-              <span className="text-sm" style={{ fontWeight: 500 }}>{startAddress}</span>
-            </div>
-
-            <h2 className="text-lg font-display" style={{ fontWeight: 600, marginBottom: '4px' }}>
-              Where do you go? 🏁
-            </h2>
-            <p className="text-sm" style={{ color: 'var(--text-muted)', marginBottom: '16px' }}>
-              Your destination
-            </p>
-
-            <div className="input-group" style={{ marginBottom: '16px' }}>
-              <input
-                type="text"
-                className="input-field"
-                placeholder="Search or pick from popular spots"
-                value={endAddress}
-                onChange={(e) => setEndAddress(e.target.value)}
-              />
-            </div>
-
-            <div className="location-grid">
-              {popularLocations.filter(l => l.address !== startAddress).map(loc => (
-                <button key={loc.name} className="location-chip" onClick={() => selectLocation(loc, 'end')}>
-                  <span>🏁</span>
-                  {loc.name}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Schedule */}
-        {step === 'schedule' && (
-          <div className="animate-slideUp">
-            <div className="route-summary glass-card" style={{ padding: '16px', marginBottom: '24px' }}>
-              <div className="delivery-route">
-                <div className="delivery-route-line">
-                  <div className="route-dot start" />
-                  <div className="route-line" />
-                  <div className="route-dot end" />
-                </div>
-                <div className="delivery-locations">
-                  <div className="delivery-location"><div className="truncate">{startAddress}</div></div>
-                  <div className="delivery-location"><div className="truncate">{endAddress}</div></div>
-                </div>
-              </div>
-            </div>
-
-            <h2 className="text-lg font-display" style={{ fontWeight: 600, marginBottom: '16px' }}>
-              Schedule & Preferences ⏰
-            </h2>
-
-            <div className="flex gap-md" style={{ marginBottom: '24px' }}>
-              <div className="input-group" style={{ flex: 1 }}>
-                <label className="input-label">Depart</label>
-                <input type="time" className="input-field" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
-              </div>
-              <div className="input-group" style={{ flex: 1 }}>
-                <label className="input-label">Arrive by</label>
-                <input type="time" className="input-field" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
-              </div>
-            </div>
-
-            <div style={{ marginBottom: '24px' }}>
-              <label className="input-label" style={{ marginBottom: '12px', display: 'block' }}>Recurring Days</label>
-              <div className="days-grid">
-                {days.map(day => (
-                  <button
-                    key={day}
-                    className={`day-chip ${selectedDays.includes(day) ? 'active' : ''}`}
-                    onClick={() => toggleDay(day)}
-                  >
-                    {day}
-                  </button>
+          <div className="glass-card animate-slideUp" style={{ padding: '32px' }}>
+             <p className="text-xs" style={{ fontWeight: 800, color: 'var(--accent-primary)', marginBottom: '12px' }}>DEPARTURE</p>
+             <h2 className="text-xl font-display" style={{ fontWeight: 800, marginBottom: '24px' }}>Where do you start?</h2>
+             <input id="route-start-input" className="input-field" placeholder="Search or tap map" value={startAddress} onChange={e => setStartAddress(e.target.value)} style={{ marginBottom: '24px' }} />
+             <div className="flex gap-sm">
+                {popularLocations.map(l => (
+                  <button key={l.name} className="chip" onClick={() => selectLocation(l, 'start')}>{l.name}</button>
                 ))}
-              </div>
-            </div>
-
-            <div style={{ marginBottom: '32px' }}>
-              <label className="input-label" style={{ marginBottom: '12px', display: 'block' }}>
-                Max Package Weight: <strong style={{ color: 'var(--text-primary)' }}>{maxWeight} kg</strong>
-              </label>
-              <input
-                type="range"
-                min="1"
-                max="10"
-                value={maxWeight}
-                onChange={(e) => setMaxWeight(parseInt(e.target.value))}
-                className="weight-slider"
-              />
-              <div className="flex justify-between text-xs" style={{ color: 'var(--text-muted)', marginTop: '4px' }}>
-                <span>1 kg</span><span>10 kg</span>
-              </div>
-            </div>
-
-            <button className="btn btn-primary btn-full btn-lg" onClick={handleSubmit} disabled={loading || selectedDays.length === 0}>
-              {loading ? <span className="btn-spinner" style={{width:20,height:20,border:'2px solid rgba(255,255,255,0.3)',borderTopColor:'white',borderRadius:'50%',animation:'spin 0.6s linear infinite'}} /> : 'Create Route 🚀'}
-            </button>
+             </div>
           </div>
         )}
 
-        {/* Confirmation */}
+        {step === 'end' && (
+          <div className="glass-card animate-slideUp" style={{ padding: '32px' }}>
+             <p className="text-xs" style={{ fontWeight: 800, color: 'var(--accent-primary)', marginBottom: '12px' }}>DESTINATION</p>
+             <h2 className="text-xl font-display" style={{ fontWeight: 800, marginBottom: '24px' }}>Where's the end?</h2>
+             <input id="route-end-input" className="input-field" placeholder="Drop-off point" value={endAddress} onChange={e => setEndAddress(e.target.value)} style={{ marginBottom: '24px' }} />
+             <div className="flex gap-sm">
+                {popularLocations.map(l => (
+                  <button key={l.name} className="chip" onClick={() => selectLocation(l, 'end')}>{l.name}</button>
+                ))}
+             </div>
+          </div>
+        )}
+
+        {step === 'schedule' && (
+          <div className="glass-card animate-slideUp" style={{ padding: '32px' }}>
+             <p className="text-xs" style={{ fontWeight: 800, color: 'var(--accent-primary)', marginBottom: '12px' }}>SCHEDULE</p>
+             <h2 className="text-xl font-display" style={{ fontWeight: 800, marginBottom: '24px' }}>Timing & Days</h2>
+             
+             <div className="flex flex-col gap-md">
+                <div className="flex gap-sm">
+                   <div style={{ flex: 1 }}>
+                      <label className="text-xs" style={{ fontWeight: 800, opacity: 0.5 }}>DEPART</label>
+                      <input className="input-field" type="time" value={startTime} onChange={e => setStartTime(e.target.value)} />
+                   </div>
+                   <div style={{ flex: 1 }}>
+                      <label className="text-xs" style={{ fontWeight: 800, opacity: 0.5 }}>ARRIVE</label>
+                      <input className="input-field" type="time" value={endTime} onChange={e => setEndTime(e.target.value)} />
+                   </div>
+                </div>
+
+                <div className="flex flex-wrap gap-xs">
+                   {days.map(d => (
+                     <button key={d} className={`day-chip ${selectedDays.includes(d) ? 'active' : ''}`} 
+                             onClick={() => setSelectedDays(prev => prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d])}>
+                        {d[0]}
+                     </button>
+                   ))}
+                </div>
+
+                <div style={{ marginTop: '12px' }}>
+                   <div className="flex justify-between" style={{ marginBottom: '8px' }}>
+                      <span className="text-xs" style={{ fontWeight: 800 }}>MAX WEIGHT</span>
+                      <span className="text-xs" style={{ fontWeight: 800, color: 'var(--accent-primary)' }}>{maxWeight} KG</span>
+                   </div>
+                   <input type="range" min="1" max="10" value={maxWeight} onChange={e => setMaxWeight(parseInt(e.target.value))} 
+                          style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
+                </div>
+
+                <button className="btn btn-primary btn-full btn-lg" onClick={handleSubmit} disabled={loading || selectedDays.length === 0}>
+                   {loading ? 'SETTING UP...' : 'LOCK IN ROUTE'}
+                </button>
+             </div>
+          </div>
+        )}
+
         {step === 'confirm' && (
-          <div className="animate-scaleIn text-center" style={{ padding: '32px 0' }}>
-            <div style={{ fontSize: '4rem', marginBottom: '16px' }}>🎉</div>
-            <h2 className="text-2xl font-display" style={{ fontWeight: 700, marginBottom: '8px' }}>
-              Route Created!
-            </h2>
-            <p className="text-sm" style={{ color: 'var(--text-muted)', marginBottom: '32px' }}>
-              You'll now receive delivery requests that match your commute. Earn while you travel!
-            </p>
-
-            <div className="route-summary glass-card" style={{ padding: '20px', marginBottom: '24px', textAlign: 'left' }}>
-              <div className="delivery-route">
-                <div className="delivery-route-line">
-                  <div className="route-dot start" />
-                  <div className="route-line" />
-                  <div className="route-dot end" />
-                </div>
-                <div className="delivery-locations">
-                  <div className="delivery-location">
-                    <div className="delivery-location-label">From</div>
-                    <div>{startAddress}</div>
-                  </div>
-                  <div className="delivery-location">
-                    <div className="delivery-location-label">To</div>
-                    <div>{endAddress}</div>
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center gap-sm" style={{ marginTop: '12px', flexWrap: 'wrap' }}>
-                <span className="chip chip-blue">{startTime} - {endTime}</span>
-                {selectedDays.map(d => <span key={d} className="chip chip-purple" style={{padding:'2px 8px',fontSize:'0.65rem'}}>{d}</span>)}
-              </div>
-            </div>
-
-            <button className="btn btn-primary btn-full btn-lg" onClick={() => onNavigate('dashboard')}>
-              Go to Dashboard
-            </button>
+          <div className="glass-card animate-scaleIn" style={{ padding: '48px 32px', textAlign: 'center' }}>
+             <div style={{ fontSize: '4rem', marginBottom: '24px' }}>🛣️</div>
+             <h2 className="text-2xl font-display" style={{ fontWeight: 900, marginBottom: '12px' }}>ROUTE LOCKED.</h2>
+             <p className="text-sm" style={{ color: 'var(--text-muted)', marginBottom: '32px' }}>We'll notify you when a package matches your vibe.</p>
+             <button className="btn btn-primary btn-full" onClick={() => onNavigate('dashboard')}>GO TO DASHBOARD</button>
           </div>
         )}
+
       </div>
 
       <style>{`
-        .route-steps {
-          display: flex; align-items: center; gap: 8px; margin-top: 12px;
-        }
-        .route-step {
-          width: 28px; height: 28px; border-radius: 50%; font-size: 0.75rem; font-weight: 600;
-          display: flex; align-items: center; justify-content: center;
-          background: var(--bg-glass); border: 1px solid var(--border-subtle); color: var(--text-muted);
-          transition: all var(--transition-smooth);
-        }
-        .route-step.active { background: var(--gradient-primary); color: white; border-color: transparent; box-shadow: var(--shadow-glow-purple); }
-        .route-step.done { background: var(--accent-green); color: white; border-color: transparent; }
-        .route-step-line { width: 24px; height: 2px; background: var(--border-subtle); }
-        .location-grid {
-          display: flex; flex-wrap: wrap; gap: 8px;
-        }
-        .location-chip {
-          display: flex; align-items: center; gap: 6px; padding: 10px 16px;
-          border-radius: var(--radius-full); background: var(--bg-glass);
-          border: 1px solid var(--border-subtle); font-size: 0.85rem;
-          color: var(--text-secondary); transition: all var(--transition-smooth);
-          cursor: pointer;
-        }
-        .location-chip:hover { background: var(--bg-glass-hover); border-color: var(--border-accent); color: var(--text-primary); }
-        .days-grid { display: flex; gap: 8px; flex-wrap: wrap; }
-        .day-chip {
-          padding: 10px 14px; border-radius: var(--radius-full); font-size: 0.8rem; font-weight: 500;
-          background: var(--bg-glass); border: 1px solid var(--border-subtle); color: var(--text-muted);
-          transition: all var(--transition-smooth); cursor: pointer;
-        }
-        .day-chip.active { background: var(--gradient-primary); color: white; border-color: transparent; box-shadow: var(--shadow-glow-purple); }
-        .weight-slider {
-          width: 100%; appearance: none; -webkit-appearance: none;
-          height: 4px; border-radius: 2px; background: var(--bg-tertiary); outline: none;
-        }
-        .weight-slider::-webkit-slider-thumb {
-          -webkit-appearance: none; width: 20px; height: 20px; border-radius: 50%;
-          background: var(--gradient-primary); cursor: pointer; box-shadow: var(--shadow-glow-purple);
-        }
-        .map-placeholder {
-          width: 100%; height: 100%; display: flex; flex-direction: column;
-          align-items: center; justify-content: center; gap: 8px;
-        }
-        .selected-location { display: flex; flex-direction: column; gap: 4px; }
+        .chip { border: 1px solid var(--border-subtle); background: var(--bg-glass); color: var(--text-secondary); font-size: 0.7rem; font-weight: 800; padding: 6px 16px; border-radius: 20px; text-transform: uppercase; }
+        .day-chip { width: 36px; height: 36px; border-radius: 10px; background: var(--bg-glass); border: 1px solid var(--border-subtle); color: var(--text-muted); font-size: 0.8rem; font-weight: 800; }
+        .day-chip.active { background: var(--accent-primary); color: #000; border-color: var(--accent-primary); }
       `}</style>
     </div>
   );

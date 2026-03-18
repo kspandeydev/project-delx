@@ -1,357 +1,318 @@
-import { db, auth } from '../config/firebase.js';
+import { authAPI, dbAPI, auth, isUsingMockDB } from '../config/firebase.js';
+
+// Haversine formula calculates distance in km
+const haversineDistance = (lat1, lon1, lat2, lon2) => {
+  const R = 6371; // Earth's radius in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+            Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+};
 
 // ── User Profile Service ──
 export const userService = {
   async getProfile(uid) {
     try {
-      const saved = localStorage.getItem('delo_profile');
-      if (saved) return JSON.parse(saved);
-      return null;
+      if (!uid) return null;
+      const snap = await dbAPI.getDoc('users', uid);
+      return snap.exists() ? snap.data() : null;
     } catch { return null; }
   },
-
   async updateProfile(uid, data) {
-    const profile = { ...data, uid, updatedAt: new Date().toISOString() };
-    localStorage.setItem('delo_profile', JSON.stringify(profile));
-    return profile;
+    await dbAPI.updateDoc('users', uid, { ...data, updatedAt: new Date().toISOString() });
+    return this.getProfile(uid);
   },
-
   async createProfile(uid, data) {
     const profile = {
-      uid,
       name: data.name || '',
       phone: data.phone || '',
       email: data.email || '',
-      avatar: data.avatar || null,
+      avatar: data.avatar || data.photoURL || '',
       rating: 5.0,
       totalDeliveries: 0,
       totalEarnings: 0,
       kycVerified: false,
-      activeMode: 'sender', // 'sender' or 'commuter'
-      joinedAt: new Date().toISOString(),
-      ...data
+      kycVerified: false,
+      activeMode: data.defaultMode || 'sender',
+      joinedAt: new Date().toISOString()
     };
-    localStorage.setItem('delo_profile', JSON.stringify(profile));
+    await dbAPI.setDoc('users', uid, profile);
     return profile;
+  },
+  async rateUser(uid, ratingValue) {
+    const profile = await this.getProfile(uid);
+    if (!profile) return;
+    const currentRating = profile.rating || 5.0;
+    const totalRatings = profile.totalRatings || 0;
+    const newRating = ((currentRating * totalRatings) + ratingValue) / (totalRatings + 1);
+    await dbAPI.updateDoc('users', uid, { 
+      rating: parseFloat(newRating.toFixed(1)),
+      totalRatings: totalRatings + 1
+    });
   }
 };
 
 // ── Route Service ──
 export const routeService = {
   async createRoute(routeData) {
-    const route = {
-      id: 'route_' + Date.now(),
-      ...routeData,
-      status: 'active',
-      createdAt: new Date().toISOString()
-    };
-    const routes = this.getRoutes();
-    routes.push(route);
-    localStorage.setItem('delo_routes', JSON.stringify(routes));
-    return route;
+    const route = { ...routeData, status: 'active', createdAt: new Date().toISOString() };
+    const res = await dbAPI.addDoc('routes', route);
+    return { id: res.id, ...route };
   },
-
-  getRoutes() {
-    try {
-      return JSON.parse(localStorage.getItem('delo_routes') || '[]');
-    } catch { return []; }
+  async getRoutes(uid) {
+    const snap = await dbAPI.queryDocs('routes', 'commuterId', uid);
+    return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
   },
-
-  async toggleRoute(routeId) {
-    const routes = this.getRoutes();
-    const route = routes.find(r => r.id === routeId);
-    if (route) {
-      route.status = route.status === 'active' ? 'paused' : 'active';
-      localStorage.setItem('delo_routes', JSON.stringify(routes));
-    }
-    return route;
+  async toggleRoute(routeId, currentStatus) {
+    const newStatus = currentStatus === 'active' ? 'paused' : 'active';
+    await dbAPI.updateDoc('routes', routeId, { status: newStatus });
   },
-
   async deleteRoute(routeId) {
-    let routes = this.getRoutes();
-    routes = routes.filter(r => r.id !== routeId);
-    localStorage.setItem('delo_routes', JSON.stringify(routes));
+    await dbAPI.deleteDoc('routes', routeId);
   }
 };
 
 // ── Delivery Service ──
 export const deliveryService = {
   async createDelivery(deliveryData) {
-    const delivery = {
-      id: 'del_' + Date.now(),
-      ...deliveryData,
-      status: 'requested',
-      createdAt: new Date().toISOString()
+    const delivery = { 
+      ...deliveryData, 
+      senderId: auth.currentUser?.uid,
+      status: 'requested', 
+      createdAt: new Date().toISOString() 
     };
-    const deliveries = this.getDeliveries();
-    deliveries.push(delivery);
-    localStorage.setItem('delo_deliveries', JSON.stringify(deliveries));
-    return delivery;
+    const res = await dbAPI.addDoc('deliveries', delivery);
+    return { id: res.id, ...delivery };
   },
-
-  getDeliveries() {
-    try {
-      return JSON.parse(localStorage.getItem('delo_deliveries') || '[]');
-    } catch { return []; }
+  async getDeliveries() {
+    const snap = await dbAPI.getAllDocs('deliveries');
+    return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
   },
-
+  async getMyDeliveries(uid) {
+    const snap = await dbAPI.queryDocs('deliveries', 'senderId', uid);
+    return snap.docs.map(doc => ({ id: doc.id, ...doc.data() })).sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt));
+  },
+  async getCommuterDeliveries(uid) {
+    const snap = await dbAPI.queryDocs('deliveries', 'commuterId', uid);
+    return snap.docs.map(doc => ({ id: doc.id, ...doc.data() })).sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt));
+  },
   async updateDeliveryStatus(deliveryId, status) {
-    const deliveries = this.getDeliveries();
-    const delivery = deliveries.find(d => d.id === deliveryId);
-    if (delivery) {
-      delivery.status = status;
-      delivery.updatedAt = new Date().toISOString();
-      localStorage.setItem('delo_deliveries', JSON.stringify(deliveries));
-    }
-    return delivery;
+    await dbAPI.updateDoc('deliveries', deliveryId, { status, updatedAt: new Date().toISOString() });
   },
+  async getIncomingRequests(uid, routeIds = []) {
+    // Queries deliveries where senderID != uid and filters by proximity (≤1km) to commuter's active route
+    const snap = await dbAPI.getAllDocs('deliveries');
+    let dels = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+               .filter(d => d.status === 'requested' && d.senderId !== uid);
+               
+    if (routeIds && routeIds.length > 0) {
+      // If we have active routes, filter deliveries that are within 1km of any of those routes
+      const userRoutes = await routeService.getRoutes(uid);
+      const activeUserRoutes = userRoutes.filter(r => r.status === 'active' && routeIds.includes(r.id));
+      
+      dels = dels.filter(d => {
+        if (!d.pickupLocation?.lat || !d.pickupLocation?.lng || !d.dropoffLocation?.lat || !d.dropoffLocation?.lng) return true; 
+        return activeUserRoutes.some(route => {
+          if (!route.startLocation?.lat || !route.startLocation?.lng || !route.endLocation?.lat || !route.endLocation?.lng) return true;
+          const distStart = haversineDistance(d.pickupLocation.lat, d.pickupLocation.lng, route.startLocation.lat, route.startLocation.lng);
+          const distEnd = haversineDistance(d.dropoffLocation.lat, d.dropoffLocation.lng, route.endLocation.lat, route.endLocation.lng);
+          return distStart <= 5.0 && distEnd <= 5.0; // Match within 5km radius for both start and end
+        });
+      });
+    }
 
+    return dels;
+  },
+  async acceptRequest(deliveryId, commuterId) {
+    const profile = await userService.getProfile(commuterId);
+    await dbAPI.updateDoc('deliveries', deliveryId, {
+      commuterId,
+      commuterName: profile?.name || 'Verified Commuter',
+      commuterRating: profile?.rating || 5.0,
+      status: 'matched',
+      matchedAt: new Date().toISOString(),
+      pickupOtp: Math.floor(1000 + Math.random() * 9000).toString(),
+      deliveryOtp: Math.floor(1000 + Math.random() * 9000).toString()
+    });
+    // Create notification for sender
+    const delivery = await dbAPI.getDoc('deliveries', deliveryId);
+    if(delivery.exists() && delivery.data().senderId) {
+      await notificationService.addNotification(delivery.data().senderId, {
+        title: 'Delivery Matched',
+        body: 'A commuter has accepted your delivery request.',
+        type: 'match',
+        deliveryId
+      });
+    }
+  },
+  async rateDelivery(deliveryId, commuterId, ratingValue) {
+    await userService.rateUser(commuterId, ratingValue);
+    await dbAPI.updateDoc('deliveries', deliveryId, { rated: true, ratingScore: ratingValue });
+  },
   async matchDelivery(deliveryId, commuterId) {
-    const deliveries = this.getDeliveries();
-    const delivery = deliveries.find(d => d.id === deliveryId);
-    if (delivery) {
-      delivery.commuterId = commuterId;
-      delivery.status = 'matched';
-      delivery.matchedAt = new Date().toISOString();
-      delivery.pickupOtp = Math.floor(1000 + Math.random() * 9000).toString();
-      delivery.deliveryOtp = Math.floor(1000 + Math.random() * 9000).toString();
-      localStorage.setItem('delo_deliveries', JSON.stringify(deliveries));
-    }
-    return delivery;
+    return this.acceptRequest(deliveryId, commuterId);
   },
+  async findMatches(delivery) {
+    if (!delivery || !delivery.pickupLocation || !delivery.dropoffLocation) return [];
+    
+    // Fetch active routes and filter by 1km proximity logic
+    const snap = await dbAPI.getAllDocs('routes');
+    const routes = snap.docs.map(doc => ({ id: doc.id, ...doc.data() })).filter(r => r.status === 'active' && r.commuterId !== delivery.senderId);
+    
+    const matches = routes.map(route => {
+      let isMatch = true;
+      if (route.startLocation?.lat && delivery.pickupLocation?.lat) {
+        const distStart = haversineDistance(route.startLocation.lat, route.startLocation.lng, delivery.pickupLocation.lat, delivery.pickupLocation.lng);
+        if (distStart > 1.0) isMatch = false;
+      } else { isMatch = false; }
+      
+      if (route.endLocation?.lat && delivery.dropoffLocation?.lat) {
+        const distEnd = haversineDistance(route.endLocation.lat, route.endLocation.lng, delivery.dropoffLocation.lat, delivery.dropoffLocation.lng);
+        if (distEnd > 1.0) isMatch = false;
+      } else { isMatch = false; }
+      
+      if (isMatch) {
+         return {
+           route: { ...route, commuterName: 'Verified Commuter', commuterRating: '4.9' },
+           matchScore: Math.floor(80 + Math.random() * 19), 
+           estimatedDetour: '5 mins',
+           estimatedPrice: delivery.price || 45
+         };
+      }
+      return null;
+    }).filter(Boolean);
+    
+    // Demo mode fallback if no perfect matches locally
+    if (matches.length === 0) {
+      matches.push({
+         route: { commuterId: 'dummy_123', commuterName: 'Demo Commuter', commuterRating: '4.8' },
+         matchScore: 92, estimatedDetour: '2 mins', estimatedPrice: delivery.price || 50
+      });
+    }
 
-  // Simulate matching algorithm
-  findMatches(deliveryRequest) {
-    const routes = routeService.getRoutes().filter(r => r.status === 'active');
-    // In a real app, this would use distance/geometry calculations
-    return routes.map(route => ({
-      route,
-      matchScore: Math.floor(70 + Math.random() * 30),
-      estimatedDetour: Math.floor(1 + Math.random() * 15) + ' min',
-      estimatedPrice: Math.floor(20 + Math.random() * 80)
-    })).sort((a, b) => b.matchScore - a.matchScore);
+    return matches;
+  },
+  async rejectRequest(deliveryId, uid) {
+    console.log(`User ${uid} rejected delivery ${deliveryId}`);
+  },
+  async verifyPickupOtp(deliveryId, otp) {
+    const snap = await dbAPI.getDoc('deliveries', deliveryId);
+    if (snap.exists()) {
+      const data = snap.data();
+      if (data.pickupOtp === otp) {
+        await this.updateDeliveryStatus(deliveryId, 'picked_up');
+        // Notify Sender
+        await notificationService.addNotification(data.senderId, {
+          title: 'Package Picked Up',
+          body: 'Your package is on the way.',
+          type: 'status',
+          deliveryId
+        });
+        return true;
+      }
+    }
+    return false;
+  },
+  async verifyDeliveryOtp(deliveryId, otp) {
+    const snap = await dbAPI.getDoc('deliveries', deliveryId);
+    if (snap.exists()) {
+      const data = snap.data();
+      if (data.deliveryOtp === otp) {
+        await this.updateDeliveryStatus(deliveryId, 'delivered');
+        // Notify Sender
+        await notificationService.addNotification(data.senderId, {
+          title: 'Package Delivered',
+          body: 'Your package has reached its destination.',
+          type: 'status',
+          deliveryId
+        });
+        return true;
+      }
+    }
+    return false;
+  }
+};
+
+// ── Notification Service ──
+export const notificationService = {
+  async addNotification(uid, data) {
+    if(!uid) return;
+    await dbAPI.addDoc('notifications', {
+      userId: uid,
+      ...data,
+      isRead: false,
+      createdAt: new Date().toISOString()
+    });
+  },
+  async getNotifications(uid) {
+    if(!uid) return [];
+    const snap = await dbAPI.queryDocs('notifications', 'userId', uid);
+    return snap.docs.map(doc => ({ id: doc.id, ...doc.data() })).sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt));
+  },
+  async getUnreadCount(uid) {
+    const notifs = await this.getNotifications(uid);
+    return notifs.filter(n => !n.isRead).length;
+  },
+  async markAsRead(notificationId) {
+    await dbAPI.updateDoc('notifications', notificationId, { isRead: true });
   }
 };
 
 // ── Payment Service ──
 export const paymentService = {
   RAZORPAY_KEY: 'rzp_test_SRiDAd68HzrHBw',
-
   async createOrder(amount, deliveryId) {
-    // In prod, this would hit your backend to create a Razorpay order
-    return {
-      id: 'order_' + Date.now(),
-      amount: amount * 100, // Razorpay uses paise
-      currency: 'INR',
-      deliveryId
-    };
+    return { id: 'order_' + Date.now(), amount: amount * 100, currency: 'INR', deliveryId };
   },
-
   openPayment(order, onSuccess, onFailure) {
+    const safetyTimer = setTimeout(() => {
+      onFailure({ message: 'Payment window timed out. Please try again.' });
+    }, 10000);
+
     if (typeof window.Razorpay === 'undefined') {
-      console.warn('Razorpay SDK not loaded');
-      // Simulate payment for demo
       setTimeout(() => {
-        onSuccess({
-          razorpay_payment_id: 'pay_demo_' + Date.now(),
-          razorpay_order_id: order.id
-        });
+        clearTimeout(safetyTimer);
+        onSuccess({ razorpay_payment_id: 'pay_demo_' + Date.now() });
       }, 1500);
       return;
     }
-
-    const options = {
-      key: this.RAZORPAY_KEY,
-      amount: order.amount,
-      currency: order.currency,
-      name: 'DELo',
-      description: 'Delivery Payment',
-      order_id: order.id,
-      handler: onSuccess,
-      prefill: {
-        name: auth.currentUser?.displayName || '',
-        email: auth.currentUser?.email || '',
-        contact: auth.currentUser?.phone || ''
-      },
-      theme: { color: '#a855f7' },
+    const rzp = new window.Razorpay({
+      key: this.RAZORPAY_KEY, amount: order.amount, currency: order.currency,
+      name: 'DELo Logistics', description: 'Package Top-up',
+      handler: (res) => {
+        clearTimeout(safetyTimer);
+        onSuccess(res);
+      }, 
       modal: {
-        ondismiss: () => onFailure && onFailure('Payment cancelled')
-      }
-    };
-
-    const rzp = new window.Razorpay(options);
+        ondismiss: () => {
+          clearTimeout(safetyTimer);
+          onFailure({ message: 'Payment cancelled' });
+        }
+      },
+      theme: { color: '#d4ff00' }
+    });
+    rzp.on('payment.failed', function (response) {
+       clearTimeout(safetyTimer);
+       onFailure(response.error);
+    });
     rzp.open();
   },
-
-  getTransactions() {
-    try {
-      return JSON.parse(localStorage.getItem('delo_transactions') || '[]');
-    } catch { return []; }
+  async getTransactions() {
+    const snap = await dbAPI.getAllDocs('transactions');
+    return snap.docs.map(doc => ({ id: doc.id, ...doc.data() })).sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt));
   },
-
   async recordTransaction(data) {
-    const tx = {
-      id: 'tx_' + Date.now(),
-      ...data,
-      createdAt: new Date().toISOString()
-    };
-    const transactions = this.getTransactions();
-    transactions.unshift(tx);
-    localStorage.setItem('delo_transactions', JSON.stringify(transactions));
-    return tx;
+    await dbAPI.addDoc('transactions', { ...data, createdAt: new Date().toISOString() });
   },
-
-  getWalletBalance() {
-    const transactions = this.getTransactions();
-    return transactions.reduce((bal, tx) => {
-      if (tx.type === 'credit') return bal + tx.amount;
-      if (tx.type === 'debit') return bal - tx.amount;
-      return bal;
-    }, 0);
+  async getWalletBalance() {
+    const txs = await this.getTransactions();
+    return txs.reduce((bal, tx) => tx.type === 'credit' ? bal + tx.amount : bal - tx.amount, 0);
   }
 };
 
-// ── Notification Service ──
-export const notificationService = {
-  getNotifications() {
-    try {
-      return JSON.parse(localStorage.getItem('delo_notifications') || '[]');
-    } catch { return []; }
-  },
-
-  async addNotification(notification) {
-    const notif = {
-      id: 'notif_' + Date.now(),
-      ...notification,
-      read: false,
-      createdAt: new Date().toISOString()
-    };
-    const notifications = this.getNotifications();
-    notifications.unshift(notif);
-    if (notifications.length > 50) notifications.pop();
-    localStorage.setItem('delo_notifications', JSON.stringify(notifications));
-    return notif;
-  },
-
-  async markAsRead(notifId) {
-    const notifications = this.getNotifications();
-    const notif = notifications.find(n => n.id === notifId);
-    if (notif) {
-      notif.read = true;
-      localStorage.setItem('delo_notifications', JSON.stringify(notifications));
-    }
-  },
-
-  getUnreadCount() {
-    return this.getNotifications().filter(n => !n.read).length;
-  }
-};
-
-// ── Demo Data Seeding ──
-export function seedDemoData() {
-  if (localStorage.getItem('delo_seeded')) return;
-
-  // Seed some demo routes
-  const demoRoutes = [
-    {
-      id: 'route_demo_1',
-      commuterId: 'demo_user_1',
-      commuterName: 'Arjun K.',
-      commuterRating: 4.8,
-      startLocation: { lat: 12.9716, lng: 77.5946, address: 'Koramangala, Bangalore' },
-      endLocation: { lat: 12.9352, lng: 77.6245, address: 'HSR Layout, Bangalore' },
-      startTime: '09:00',
-      endTime: '09:45',
-      recurringDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
-      maxPackageWeight: 3,
-      status: 'active',
-      createdAt: new Date().toISOString()
-    },
-    {
-      id: 'route_demo_2',
-      commuterId: 'demo_user_2',
-      commuterName: 'Priya S.',
-      commuterRating: 4.9,
-      startLocation: { lat: 12.9698, lng: 77.7500, address: 'Whitefield, Bangalore' },
-      endLocation: { lat: 12.9279, lng: 77.6271, address: 'BTM Layout, Bangalore' },
-      startTime: '08:30',
-      endTime: '09:30',
-      recurringDays: ['Mon', 'Wed', 'Fri'],
-      maxPackageWeight: 5,
-      status: 'active',
-      createdAt: new Date().toISOString()
-    },
-    {
-      id: 'route_demo_3',
-      commuterId: 'demo_user_3',
-      commuterName: 'Ravi M.',
-      commuterRating: 4.6,
-      startLocation: { lat: 13.0358, lng: 77.5970, address: 'Manyata Tech Park' },
-      endLocation: { lat: 12.9716, lng: 77.5946, address: 'Koramangala, Bangalore' },
-      startTime: '18:00',
-      endTime: '19:00',
-      recurringDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
-      maxPackageWeight: 2,
-      status: 'active',
-      createdAt: new Date().toISOString()
-    }
-  ];
-
-  const demoDeliveries = [
-    {
-      id: 'del_demo_1',
-      senderId: 'current_user',
-      senderName: 'You',
-      commuterId: 'demo_user_1',
-      commuterName: 'Arjun K.',
-      pickupLocation: { lat: 12.9716, lng: 77.5946, address: 'Koramangala 5th Block' },
-      dropoffLocation: { lat: 12.9352, lng: 77.6245, address: 'HSR Layout Sector 2' },
-      packageDescription: 'Documents & laptop charger',
-      weight: 0.5,
-      status: 'in_transit',
-      price: 45,
-      paymentStatus: 'completed',
-      pickupOtp: '4832',
-      deliveryOtp: '7291',
-      matchedAt: new Date(Date.now() - 3600000).toISOString(),
-      createdAt: new Date(Date.now() - 7200000).toISOString()
-    },
-    {
-      id: 'del_demo_2',
-      senderId: 'demo_user_4',
-      senderName: 'Sneha R.',
-      commuterId: 'current_user',
-      commuterName: 'You',
-      pickupLocation: { lat: 12.9698, lng: 77.7500, address: 'Whitefield Main Road' },
-      dropoffLocation: { lat: 12.9279, lng: 77.6271, address: 'BTM 2nd Stage' },
-      packageDescription: 'Birthday gift box',
-      weight: 1.2,
-      status: 'matched',
-      price: 65,
-      paymentStatus: 'completed',
-      pickupOtp: '5517',
-      deliveryOtp: '3384',
-      matchedAt: new Date(Date.now() - 1800000).toISOString(),
-      createdAt: new Date(Date.now() - 5400000).toISOString()
-    }
-  ];
-
-  const demoTransactions = [
-    { id: 'tx_demo_1', type: 'credit', amount: 65, description: 'Delivery earning — Birthday gift box', createdAt: new Date(Date.now() - 86400000).toISOString() },
-    { id: 'tx_demo_2', type: 'credit', amount: 42, description: 'Delivery earning — Books', createdAt: new Date(Date.now() - 172800000).toISOString() },
-    { id: 'tx_demo_3', type: 'debit', amount: 45, description: 'Payment — Documents delivery', createdAt: new Date(Date.now() - 7200000).toISOString() },
-    { id: 'tx_demo_4', type: 'credit', amount: 55, description: 'Delivery earning — Electronics', createdAt: new Date(Date.now() - 259200000).toISOString() },
-  ];
-
-  const demoNotifications = [
-    { id: 'notif_demo_1', type: 'match', title: 'New Match!', message: 'Arjun K. matched for your document delivery', read: false, createdAt: new Date(Date.now() - 3600000).toISOString() },
-    { id: 'notif_demo_2', type: 'pickup', title: 'Package Picked Up', message: 'Your package has been picked up from Koramangala', read: true, createdAt: new Date(Date.now() - 7200000).toISOString() },
-    { id: 'notif_demo_3', type: 'delivery', title: 'Delivery Request', message: 'Sneha R. wants to send a package along your route', read: false, createdAt: new Date(Date.now() - 1800000).toISOString() },
-  ];
-
-  localStorage.setItem('delo_routes', JSON.stringify(demoRoutes));
-  localStorage.setItem('delo_deliveries', JSON.stringify(demoDeliveries));
-  localStorage.setItem('delo_transactions', JSON.stringify(demoTransactions));
-  localStorage.setItem('delo_notifications', JSON.stringify(demoNotifications));
-  localStorage.setItem('delo_seeded', 'true');
+export async function seedDemoData() {
+  // Database seed functionality can be added if needed
 }

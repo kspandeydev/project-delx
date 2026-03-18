@@ -1,4 +1,18 @@
+import { useState, useEffect } from 'react';
+import { db, auth } from '../config/firebase.js';
+import { collection, query, where, onSnapshot } from 'firebase/firestore';
+
 export default function BottomNav({ currentPage, onNavigate }) {
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  useEffect(() => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    const q = query(collection(db, 'notifications'), where('userId', '==', uid), where('isRead', '==', false));
+    const unsub = onSnapshot(q, (snap) => setUnreadCount(snap.docs.length));
+    return () => unsub();
+  }, []);
+
   const navItems = [
     {
       id: 'dashboard',
@@ -22,7 +36,7 @@ export default function BottomNav({ currentPage, onNavigate }) {
     },
     {
       id: 'delivery-request',
-      label: 'Send',
+      label: '',
       icon: (
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <line x1="12" y1="5" x2="12" y2="19" />
@@ -32,13 +46,19 @@ export default function BottomNav({ currentPage, onNavigate }) {
       isAction: true,
     },
     {
-      id: 'payments',
-      label: 'Wallet',
+      id: 'notifications',
+      label: 'Alerts',
       icon: (
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="1" y="4" width="22" height="16" rx="2" ry="2" />
-          <line x1="1" y1="10" x2="23" y2="10" />
-        </svg>
+        <div style={{ position: 'relative' }}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+          </svg>
+          {unreadCount > 0 && (
+            <span style={{ position: 'absolute', top: '-6px', right: '-8px', background: 'var(--accent-pink)', color: '#000', borderRadius: '50%', width: '16px', height: '16px', fontSize: '10px', fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              {unreadCount}
+            </span>
+          )}
+        </div>
       ),
     },
     {
@@ -76,20 +96,27 @@ export default function BottomNav({ currentPage, onNavigate }) {
       ))}
 
       <style>{`
+        .bottom-nav { border-top: 1px solid var(--border-subtle); background: var(--bg-glass); height: 80px; }
+        .nav-item { color: var(--text-muted); transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); width: 20%; display: flex; justify-content: center; }
+        .nav-item.active { color: var(--accent-primary); }
+        .nav-item svg { width: 24px; height: 24px; }
+        .nav-item-label { font-size: 0.65rem; font-weight: 800; font-family: var(--font-primary); text-transform: uppercase; letter-spacing: 0.05em; }
         .nav-action { position: relative; }
         .nav-action-btn {
-          width: 48px; height: 48px; border-radius: 50%;
-          background: var(--gradient-primary);
+          width: 56px; height: 56px; border-radius: 20px;
+          background: var(--accent-primary);
           display: flex; align-items: center; justify-content: center;
-          box-shadow: var(--shadow-glow-purple);
-          transition: all var(--transition-smooth);
-          margin-top: -20px;
+          box-shadow: 0 0 30px rgba(212, 255, 0, 0.2);
+          transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+          margin-top: -32px; border: 4px solid var(--bg-primary);
         }
-        .nav-action-btn svg { width: 22px; height: 22px; color: white; }
-        .nav-action-btn:hover, .nav-action:active .nav-action-btn {
-          transform: scale(1.1);
-          box-shadow: 0 0 30px rgba(168,85,247,0.4);
+        .nav-action-btn svg { width: 28px; height: 28px; color: #000; display: block; }
+        .nav-action-btn:hover {
+          transform: translateY(-8px) scale(1.05);
+          box-shadow: 0 0 40px rgba(212, 255, 0, 0.4);
         }
+        .nav-item.active svg { transform: translateY(-4px); }
+        .nav-item.active .nav-action-btn svg { transform: none; }
       `}</style>
     </nav>
   );
